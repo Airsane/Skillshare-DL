@@ -1,6 +1,7 @@
 import requests, json, sys, re, os
 import cloudscraper
 from slugify import slugify
+import ffmpeg
 
 class Skillshare(object):
     def __init__(
@@ -24,7 +25,7 @@ class Skillshare(object):
             return False
 
     def download_course_by_url(self, url):
-        m = re.match(r'https://www.skillshare.com/classes/.*?/(\d+)', url)
+        m = re.match(r'https://www.skillshare.com/en/classes/.*?/(\d+)', url)
 
         if not m:
             raise Exception('Failed to parse class ID from URL')
@@ -64,9 +65,7 @@ class Skillshare(object):
             os.makedirs(base_path)
 
         for s in data['_embedded']['sessions']['_embedded']['sessions']:
-            video_id = None
-            if 'video_hashed_id' in s and s['video_hashed_id']:
-                video_id = s['video_hashed_id'].split(':')[1]
+            video_id = s['id']
 
             if not video_id:
                 raise Exception('Failed to read video ID from data')
@@ -117,39 +116,23 @@ class Skillshare(object):
         return res.json()
 
     def download_video(self, fpath, video_id):
-        meta_url = 'https://edge.api.brightcove.com/playback/v1/accounts/{account_id}/videos/{video_id}'.format(
-            account_id=self.brightcove_account_id,
+        streams_url = 'https://www.skillshare.com/sessions/{video_id}/stream'.format(
             video_id=video_id,
         )
+        
+        headers = {
+            "cookie": self.cookie,
+            "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/132.0.0.0 Safari/537.36",
+        }
+        
+        response = requests.get(streams_url, headers=headers)
+        
+        print(response.text)
 
-        scraper = cloudscraper.create_scraper(
-            browser={
-                'custom': 'Mozilla/5.0 (Windows NT 6.1) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/41.0.2228.0 Safari/537.3',
-            },
-            delay=10
-        )
-
-        meta_res = scraper.get(
-            meta_url,
-            headers={
-                'User-Agent': 'Mozilla/5.0 (Windows NT 6.1) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/41.0.2228.0 Safari/537.3',
-                'Accept-Charset': 'ISO-8859-1,utf-8;q=0.7,*;q=0.3',
-                'Accept-Encoding': 'none',
-                'Accept-Language': 'en-US,en;q=0.8',
-                'Connection': 'keep-alive',
-                'Accept': 'application/json;pk={}'.format(self.pk),
-                'Origin': 'https://www.skillshare.com'
-            }
-        )
-
-        if meta_res.status_code != 200:
+        if response.status_code != 200:
             raise Exception('Failed to fetch video meta')
 
-        if meta_res.json()['sources'][6]['container'] == 'MP4' and 'src' in meta_res.json()['sources'][6]:
-            dl_url = meta_res.json()['sources'][6]['src']
-            # break
-        else:
-            dl_url = meta_res.json()['sources'][1]['src']
+        dl_url = response.json()['streams'][1]['url']
 
         print('Downloading {}...'.format(fpath))
 
@@ -157,25 +140,7 @@ class Skillshare(object):
             print('Video already downloaded, skipping...')
             return
 
-        with open(fpath, 'wb') as f:
-            response = requests.get(dl_url, allow_redirects=True, stream=True)
-            total_length = response.headers.get('content-length')
-
-            if not total_length:
-                f.write(response.content)
-
-            else:
-                dl = 0
-                total_length = int(total_length)
-
-                for data in response.iter_content(chunk_size=4096):
-                    dl += len(data)
-                    f.write(data)
-                    done = int(50 * dl / total_length)
-                    sys.stdout.write("\r[%s%s]" % ('=' * done, ' ' * (50 - done)))
-                    sys.stdout.flush()
-
-            print('')
+        ffmpeg.input(dl_url).output(fpath, vcodec='libx264', acodec='aac').run()
 
 def splash():
 
